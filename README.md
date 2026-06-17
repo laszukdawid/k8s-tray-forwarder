@@ -37,7 +37,7 @@ line (e.g. EKS `aws eks get-token`) works here too — no separate credentials.
 ## Install via Homebrew
 
 ```sh
-brew install laszukdawid/tap/k8s-tray-forwarder
+brew install --cask laszukdawid/tap/k8s-tray-forwarder
 k8s-tray-forwarder            # launches into the menu bar
 ```
 

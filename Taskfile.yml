@@ -69,4 +69,4 @@ tasks:
   brew-install:
     desc: 'Install the prebuilt binary from the tap'
     cmds:
-      - 'brew install {{.TAP}}/{{.BIN}}'
+      - 'brew install --cask {{.TAP}}/{{.BIN}}'
