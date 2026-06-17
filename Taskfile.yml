@@ -4,6 +4,8 @@ vars:
   APP_NAME: K8s Port Forwards
   BIN: k8s-tray-forwarder
   APP_ID: com.github.dawidlaszuk.k8s-tray-forwarder
+  REPO: laszukdawid/k8s-tray-forwarder
+  TAP: laszukdawid/tap
 
 tasks:
   default:
@@ -54,3 +56,15 @@ tasks:
     desc: Remove build artifacts
     cmds:
       - rm -rf {{.BIN}} "{{.APP_NAME}}.app"
+
+  formula-sha:
+    desc: 'Print the sha256 of a release tarball for the Homebrew formula (TAG=v0.1.0)'
+    requires:
+      vars: [TAG]
+    cmds:
+      - curl -fsSL "https://github.com/{{.REPO}}/archive/refs/tags/{{.TAG}}.tar.gz" | shasum -a 256 | cut -d' ' -f1
+
+  brew-install:
+    desc: 'Install from the tap (use HEAD=1 to build the latest commit)'
+    cmds:
+      - 'brew install {{if .HEAD}}--HEAD {{end}}{{.TAP}}/{{.BIN}}'

@@ -34,6 +34,22 @@ line (e.g. EKS `aws eks get-token`) works here too — no separate credentials.
 - `kubectl` on your `PATH`, with a working kubeconfig.
 - [Task](https://taskfile.dev) (`brew install go-task`) to use the `task` commands below.
 
+## Install via Homebrew
+
+Until a version is tagged, install the latest commit (Homebrew compiles it from
+source — Fyne is a CGO app, so there are no prebuilt bottles):
+
+```sh
+brew install --HEAD laszukdawid/tap/k8s-tray-forwarder
+k8s-tray-forwarder            # launches into the menu bar
+```
+
+Once a release is tagged, plain `brew install laszukdawid/tap/k8s-tray-forwarder`
+works (no `--HEAD`). See [Releasing](#releasing) for how to cut one.
+
+The formula lives in [`Formula/k8s-tray-forwarder.rb`](./Formula/k8s-tray-forwarder.rb);
+copy it into the `laszukdawid/homebrew-tap` repo to publish updates.
+
 ## Run
 
 ```sh
@@ -59,6 +75,22 @@ to point at a stable path, enable it from the installed `.app` rather than from
 
 > `task bundle` expects an `icon.png` in the project root. Drop any square PNG
 > there (1024×1024 recommended) before bundling.
+
+## Releasing
+
+The Homebrew formula builds from source, so a release is just a git tag plus
+filling in the stable block of [`Formula/k8s-tray-forwarder.rb`](./Formula/k8s-tray-forwarder.rb):
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+task formula-sha TAG=v0.1.0     # prints the tarball sha256
+```
+
+Then uncomment the `url` / `sha256` / `version` lines in the formula (using that
+sha256), set `version` to `0.1.0`, and copy the file into the
+`laszukdawid/homebrew-tap` repo. After that, `brew install
+laszukdawid/tap/k8s-tray-forwarder` installs the tagged release without
+`--HEAD`. The `-X main.version` ldflag wires the tag into `--version`.
 
 ## Configuration
 
