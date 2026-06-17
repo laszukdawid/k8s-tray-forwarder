@@ -36,19 +36,17 @@ line (e.g. EKS `aws eks get-token`) works here too — no separate credentials.
 
 ## Install via Homebrew
 
-Until a version is tagged, install the latest commit (Homebrew compiles it from
-source — Fyne is a CGO app, so there are no prebuilt bottles):
-
 ```sh
-brew install --HEAD laszukdawid/tap/k8s-tray-forwarder
+brew install laszukdawid/tap/k8s-tray-forwarder
 k8s-tray-forwarder            # launches into the menu bar
 ```
 
-Once a release is tagged, plain `brew install laszukdawid/tap/k8s-tray-forwarder`
-works (no `--HEAD`). See [Releasing](#releasing) for how to cut one.
-
-The formula lives in [`Formula/k8s-tray-forwarder.rb`](./Formula/k8s-tray-forwarder.rb);
-copy it into the `laszukdawid/homebrew-tap` repo to publish updates.
+This installs a **prebuilt binary** (no local compile) published by CI on each
+release — see [Releasing](#releasing). It's packaged as a Homebrew **cask** whose
+post-install hook strips the quarantine attribute, so the unsigned binary runs
+without a Gatekeeper "unidentified developer" prompt and without Apple
+notarization. The cask is generated and pushed to `laszukdawid/homebrew-tap`
+automatically by the release pipeline.
 
 ## Run
 
@@ -78,19 +76,35 @@ to point at a stable path, enable it from the installed `.app` rather than from
 
 ## Releasing
 
-The Homebrew formula builds from source, so a release is just a git tag plus
-filling in the stable block of [`Formula/k8s-tray-forwarder.rb`](./Formula/k8s-tray-forwarder.rb):
+Releases are built by [GoReleaser](https://goreleaser.com) in CI
+([`.github/workflows/release.yml`](./.github/workflows/release.yml)) and triggered
+by pushing a version tag:
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
-task formula-sha TAG=v0.1.0     # prints the tarball sha256
 ```
 
-Then uncomment the `url` / `sha256` / `version` lines in the formula (using that
-sha256), set `version` to `0.1.0`, and copy the file into the
-`laszukdawid/homebrew-tap` repo. After that, `brew install
-laszukdawid/tap/k8s-tray-forwarder` installs the tagged release without
-`--HEAD`. The `-X main.version` ldflag wires the tag into `--version`.
+On that tag the workflow (running on a **macOS** runner, because Fyne is a CGO
+app that can't be cross-compiled from Linux) builds `darwin/arm64` and
+`darwin/amd64` binaries, publishes a GitHub Release with the tarballs +
+checksums, and commits the updated Homebrew cask to `laszukdawid/homebrew-tap`.
+The tag flows into `--version` via the `-X main.version` ldflag.
+
+Validate the config and the (CGO) build locally before tagging:
+
+```sh
+task release-check       # goreleaser check — validates .goreleaser.yaml
+task release-snapshot    # builds into ./dist without publishing
+```
+
+**One-time setup:** add a repo secret `HOMEBREW_TAP_GITHUB_TOKEN` (a PAT with
+`repo` scope on `laszukdawid/homebrew-tap`) so GoReleaser can push the formula —
+the same secret your `terminal-agent` release uses. `GITHUB_TOKEN` is provided
+automatically.
+
+> The `amd64` slice is cross-built from the arm64 runner via `clang -arch
+> x86_64`. If that ever breaks, drop `amd64` from `goarch` in `.goreleaser.yaml`
+> — arm64-only still covers every Apple Silicon Mac.
 
 ## Configuration
 
