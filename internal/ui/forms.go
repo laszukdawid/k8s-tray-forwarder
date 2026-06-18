@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/dawidlaszuk/k8s-tray-forwarder/internal/config"
@@ -63,6 +64,20 @@ func (a *App) showAddWindow(existing *config.Forward) {
 
 	status := widget.NewLabel("")
 	status.Wrapping = fyne.TextWrapWord
+	// A long auth failure (e.g. a stale AWS SSO session) produces a very tall
+	// error message. Keep it inside a height-bounded scroll: without this the
+	// label grows the window's MinSize until the window outgrows the screen and
+	// buries the Cancel/Save buttons, leaving no way to dismiss it. The user can
+	// scroll to read the full text and clear it with the dismiss (✕) button.
+	statusScroll := container.NewVScroll(status)
+	dismissBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), nil)
+	dismissBtn.Importance = widget.LowImportance
+	// Wrap the dismiss button so it keeps its natural height instead of stretching
+	// to the (taller) status scroll beside it. Toggle visibility on the wrapper,
+	// not the button: a hidden wrapper makes the border's right region collapse
+	// entirely (no padding reserved), so the scroll reclaims the full width.
+	dismissBox := container.NewVBox(dismissBtn)
+	dismissBox.Hide()
 
 	// resources holds the most recently fetched targets so we can prefill ports.
 	var resources []kube.Resource
@@ -78,7 +93,24 @@ func (a *App) showAddWindow(existing *config.Forward) {
 	// and writes happen on the main goroutine (OnChanged + fyne.Do callbacks).
 	var nsReq, resReq int
 
-	setStatus := func(s string) { status.SetText(s) }
+	setStatus := func(s string) {
+		status.SetText(s)
+		statusScroll.SetMinSize(fyne.Size{}) // collapse back to the default one-line height
+		statusScroll.Refresh()
+		dismissBox.Hide()
+	}
+	// setError surfaces err in the status area with enough room to read it plus a
+	// dismiss button, and records the full text in the activity log so a long
+	// message stays available after it is cleared.
+	setError := func(err error) {
+		status.SetText("error: " + err.Error())
+		statusScroll.SetMinSize(fyne.NewSize(0, 96)) // capped so the window stays on-screen
+		statusScroll.ScrollToTop()
+		statusScroll.Refresh()
+		dismissBox.Show()
+		a.logf("forward setup: %v", err)
+	}
+	dismissBtn.OnTapped = func() { setStatus("") }
 
 	// --- async loaders ------------------------------------------------------
 	loadResources := func() {
@@ -97,7 +129,7 @@ func (a *App) showAddWindow(existing *config.Forward) {
 				}
 				restoring = false // edit cascade has reached its final stage
 				if err != nil {
-					setStatus("error: " + err.Error())
+					setError(err)
 					return
 				}
 				resources = res
@@ -131,7 +163,7 @@ func (a *App) showAddWindow(existing *config.Forward) {
 					return // superseded by a newer request
 				}
 				if err != nil {
-					setStatus("error: " + err.Error())
+					setError(err)
 					return
 				}
 				if wantNamespace != "" {
@@ -215,7 +247,7 @@ func (a *App) showAddWindow(existing *config.Forward) {
 		ctxs, err := kube.Contexts(context.Background())
 		fyne.Do(func() {
 			if err != nil {
-				setStatus("error: " + err.Error())
+				setError(err)
 				return
 			}
 			if existing != nil {
@@ -295,9 +327,11 @@ func (a *App) showAddWindow(existing *config.Forward) {
 		widget.NewButton("Save", save),
 	)
 
+	statusRow := container.NewBorder(nil, nil, nil, dismissBox, statusScroll)
+
 	content := container.NewBorder(
 		widget.NewLabelWithStyle("Kubernetes port-forward", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		container.NewVBox(status, buttons),
+		container.NewVBox(statusRow, buttons),
 		nil, nil,
 		container.NewVScroll(form),
 	)
