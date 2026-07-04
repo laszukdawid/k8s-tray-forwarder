@@ -38,14 +38,16 @@ line (e.g. EKS `aws eks get-token`) works here too — no separate credentials.
 
 ```sh
 brew install --cask laszukdawid/tap/k8s-tray-forwarder
-k8s-tray-forwarder            # launches into the menu bar
 ```
 
-This installs a **prebuilt binary** (no local compile) published by CI on each
-release — see [Releasing](#releasing). It's packaged as a Homebrew **cask** whose
-post-install hook strips the quarantine attribute, so the unsigned binary runs
-without a Gatekeeper "unidentified developer" prompt and without Apple
-notarization. The cask is generated and pushed to `laszukdawid/homebrew-tap`
+Then launch **K8s Port Forwards** from Spotlight / Launchpad / `/Applications` —
+no terminal needed. Look for its icon in the menu bar.
+
+This installs a **prebuilt, universal (`arm64` + `x86_64`) `.app`** (no local
+compile) published by CI on each release — see [Releasing](#releasing). It's a
+Homebrew **cask** whose post-install hook strips the quarantine attribute, so the
+unsigned app launches without a Gatekeeper "unidentified developer" prompt and
+without Apple notarization. The cask is pushed to `laszukdawid/homebrew-tap`
 automatically by the release pipeline.
 
 ## Run
@@ -62,17 +64,19 @@ no arguments to list all available tasks.
 ## Package as a macOS .app
 
 ```sh
-task install-fyne   # one-time: installs the fyne packaging CLI
-task bundle         # produces "K8s Port Forwards.app"
+task bundle         # produces "K8s Port Forwards.app" + a distributable zip
 ```
 
+This wraps the binary into a bundle with [`packaging/make-app.sh`](./packaging/make-app.sh)
+— the exact same script CI uses — so what you build locally matches the release.
 Drag the `.app` into `/Applications`, then enable **Launch at login** from the
 Manage window (or set `launchAtLogin: true` in the config). For launch-at-login
 to point at a stable path, enable it from the installed `.app` rather than from
 `task run` — the LaunchAgent records whatever executable launched the app.
 
-> `task bundle` expects an `icon.png` in the project root. Drop any square PNG
-> there (1024×1024 recommended) before bundling.
+> The bundle icon comes from [`packaging/icon.png`](./packaging/icon.png), a
+> generated placeholder. Replace that file with any square PNG (1024×1024
+> recommended) — or regenerate the placeholder with `task gen-icon` — and rebuild.
 
 ## Releasing
 
@@ -85,20 +89,35 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 On that tag the workflow (running on a **macOS** runner, because Fyne is a CGO
-app that can't be cross-compiled from Linux) builds `darwin/arm64` and
-`darwin/amd64` binaries, publishes a GitHub Release with the tarballs +
-checksums, and commits the updated Homebrew cask to `laszukdawid/homebrew-tap`.
+app that can't be cross-compiled from Linux):
+
+1. **GoReleaser** builds `darwin/arm64` + `darwin/amd64` binaries, merges them
+   into a universal binary, and publishes a GitHub Release (tarballs + checksums).
+2. [`packaging/make-app.sh`](./packaging/make-app.sh) wraps the universal binary
+   into `K8s Port Forwards.app` and zips it; the zip is attached to the release.
+3. [`packaging/publish-cask.sh`](./packaging/publish-cask.sh) renders
+   [`packaging/k8s-tray-forwarder.rb.tmpl`](./packaging/k8s-tray-forwarder.rb.tmpl)
+   (an `app`-stanza cask) with the zip's version + sha256 and pushes it to
+   `laszukdawid/homebrew-tap`.
+
 The tag flows into `--version` via the `-X main.version` ldflag.
+
+> **Why not GoReleaser for the `.app` and cask?** GoReleaser OSS can't build
+> `.app` bundles and its cask generator only emits a `binary` stanza (both are
+> Pro features). We need an `app` stanza so `brew install --cask` installs a
+> launchable app rather than a CLI binary — hence the `packaging/` scripts.
 
 Validate the config and the (CGO) build locally before tagging:
 
 ```sh
 task release-check       # goreleaser check — validates .goreleaser.yaml
 task release-snapshot    # builds into ./dist without publishing
+task bundle              # build the .app locally
+task cask                # render the cask (dry run) — no push
 ```
 
 **One-time setup:** add a repo secret `HOMEBREW_TAP_GITHUB_TOKEN` (a PAT with
-`repo` scope on `laszukdawid/homebrew-tap`) so GoReleaser can push the formula —
+`repo` scope on `laszukdawid/homebrew-tap`) so the workflow can push the cask —
 the same secret your `terminal-agent` release uses. `GITHUB_TOKEN` is provided
 automatically.
 
