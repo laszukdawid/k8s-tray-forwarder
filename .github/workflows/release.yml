@@ -1,14 +1,22 @@
-# Builds prebuilt macOS binaries with GoReleaser on a version tag and updates
-# the laszukdawid/homebrew-tap Homebrew formula.
+# Release pipeline: on a version tag, build the macOS binaries with GoReleaser,
+# wrap the universal binary into "K8s Port Forwards.app", attach the app zip to
+# the GitHub Release, and publish the Homebrew cask to laszukdawid/homebrew-tap.
 #
 # Runs on macOS because Fyne is a CGO app and cannot be cross-compiled from
 # Linux. The arm64 slice builds natively; the amd64 slice is cross-built via
-# `clang -arch x86_64` (see .goreleaser.yaml).
+# `clang -arch x86_64` (see .goreleaser.yaml), and the two are merged into a
+# universal binary.
+#
+# Why the .app + cask live here and not in GoReleaser: GoReleaser OSS can't build
+# .app bundles and its cask generator only emits a `binary` stanza (both are Pro
+# features). We need an `app` stanza so `brew install --cask` drops a launchable
+# app into /Applications — no terminal required. See packaging/.
 #
 # Required secret (add to this repo's Actions secrets):
 #   HOMEBREW_TAP_GITHUB_TOKEN — a PAT with `repo` scope on laszukdawid/homebrew-tap
-#                               so GoReleaser can commit the updated formula.
-# GITHUB_TOKEN is provided automatically and is used to create the release here.
+#                               so the cask can be committed.
+# GITHUB_TOKEN is provided automatically and is used to create the release and
+# attach the app zip.
 name: Release
 
 on:
@@ -20,7 +28,7 @@ permissions:
   contents: write
 
 jobs:
-  goreleaser:
+  release:
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -41,4 +49,26 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build .app bundle
+        run: |
+          bash packaging/make-app.sh \
+            --bin "$(ls dist/*_darwin_all/k8s-tray-forwarder)" \
+            --version "${GITHUB_REF_NAME}" \
+            --out dist
+
+      - name: Attach .app zip to release
+        run: gh release upload "${GITHUB_REF_NAME}" dist/K8s-Port-Forwards_*.zip --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Skip the cask on prereleases (tags with a semver suffix like v1.2.3-rc1),
+      # mirroring GoReleaser's old skip_upload: auto.
+      - name: Publish Homebrew cask
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          bash packaging/publish-cask.sh \
+            --version "${GITHUB_REF_NAME}" \
+            --zip "$(ls dist/K8s-Port-Forwards_*.zip)"
+        env:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

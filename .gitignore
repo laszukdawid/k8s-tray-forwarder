@@ -1,2 +1,6 @@
 # GoReleaser output
 dist/
+
+# Local `task bundle` output (the .app + its distributable zip)
+/K8s Port Forwards.app/
+/K8s-Port-Forwards_*.zip

@@ -1,0 +1,42 @@
+cask "k8s-tray-forwarder" do
+  version "__VERSION__"
+  sha256 "__SHA256__"
+
+  url "https://github.com/laszukdawid/k8s-tray-forwarder/releases/download/v#{version}/K8s-Port-Forwards_#{version}.zip"
+  name "K8s Port Forwards"
+  desc "Menu-bar app to toggle Kubernetes port-forwards"
+  homepage "https://github.com/laszukdawid/k8s-tray-forwarder"
+
+  # Install the launchable app, and also link the CLI onto PATH. The executable
+  # inside the bundle is the same universal binary, so there's nothing extra to
+  # download — `k8s-tray-forwarder` (e.g. --version) works from a terminal too.
+  app "K8s Port Forwards.app"
+  binary "#{appdir}/K8s Port Forwards.app/Contents/MacOS/k8s-tray-forwarder"
+
+  # The app is unsigned/unnotarised. Casks quarantine their downloads, which
+  # would trigger a Gatekeeper "unidentified developer" block; strip the
+  # quarantine attribute after install so it launches with a double-click.
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/K8s Port Forwards.app"]
+  end
+
+  uninstall launchctl: "com.github.dawidlaszuk.k8s-tray-forwarder",
+            quit:      "com.github.dawidlaszuk.k8s-tray-forwarder"
+
+  zap trash: [
+    "~/Library/Application Support/k8s-tray-forwarder",
+    "~/Library/LaunchAgents/com.github.dawidlaszuk.k8s-tray-forwarder.plist",
+  ]
+
+  caveats <<~EOS
+    K8s Port Forwards is a menu-bar app. Launch it from Spotlight, Launchpad or
+    /Applications, then look for its icon in the menu bar (it has no main window).
+    The `k8s-tray-forwarder` command is also linked onto your PATH.
+
+    It shells out to `kubectl`, so make sure kubectl is installed and on PATH.
+
+    Config lives at:
+      ~/Library/Application Support/k8s-tray-forwarder/config.yaml
+  EOS
+end

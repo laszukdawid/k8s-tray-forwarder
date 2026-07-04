@@ -1,12 +1,16 @@
 # GoReleaser config for k8s-tray-forwarder.
 # Documentation: https://goreleaser.com
 #
-# Publishes prebuilt macOS binaries on a version tag and updates the
-# laszukdawid/homebrew-tap Homebrew FORMULA (not a cask): formula installs are
-# not Gatekeeper-quarantined, so the unsigned binary runs without an
-# "unidentified developer" prompt and without Apple notarization. Fyne is a CGO
-# app, so this must run on a macOS runner (no Linux cross-compile); the amd64
-# slice is cross-built from the arm64 runner via `clang -arch x86_64`.
+# Builds the macOS binaries (per-arch + a merged universal binary) and publishes
+# a GitHub Release on a version tag. Fyne is a CGO app, so this must run on a
+# macOS runner (no Linux cross-compile); the amd64 slice is cross-built from the
+# arm64 runner via `clang -arch x86_64`.
+#
+# The universal binary is wrapped into "K8s Port Forwards.app" and the Homebrew
+# cask is published OUTSIDE GoReleaser (see .github/workflows/release.yml +
+# packaging/). GoReleaser OSS can only emit a `binary` cask stanza / can't build
+# .app bundles — both are Pro features — and we need an `app` stanza so `brew
+# install` drops a launchable app, not a CLI binary.
 version: 2
 
 project_name: k8s-tray-forwarder
@@ -42,6 +46,16 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{ .Version }}
+
+# Merge the arm64 + amd64 binaries into one universal (fat) binary. The release
+# workflow wraps this into the .app so a single bundle runs on Apple Silicon and
+# Intel alike. replace: false keeps the per-arch tarballs below for CLI users.
+universal_binaries:
+  - id: universal
+    ids:
+      - k8s-tray-forwarder
+    replace: false
+    name_template: k8s-tray-forwarder
 
 archives:
   - id: k8s-tray-forwarder
@@ -81,35 +95,6 @@ release:
   mode: replace
   name_template: "{{ .ProjectName }} v{{ .Version }}"
 
-# Homebrew tap (cask). GoReleaser deprecated `brews` (formulae) in favor of
-# casks. Casks quarantine their downloads, so an unsigned binary would otherwise
-# hit a Gatekeeper "unidentified developer" block; the post-install hook strips
-# the quarantine attribute so it runs cleanly — no Apple notarization needed.
-homebrew_casks:
-  - name: k8s-tray-forwarder
-    ids:
-      - k8s-tray-forwarder
-    binaries:
-      - k8s-tray-forwarder
-    repository:
-      owner: laszukdawid
-      name: homebrew-tap
-      branch: main
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://github.com/laszukdawid/k8s-tray-forwarder"
-    description: "macOS menu-bar app to toggle Kubernetes port-forwards"
-    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
-    hooks:
-      post:
-        install: |
-          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/k8s-tray-forwarder"]
-    caveats: |
-      k8s-tray-forwarder is a macOS menu-bar app — it has no main window.
-      Start it with:
-        k8s-tray-forwarder
-      then look for the icon in the menu bar.
-
-      Config lives at:
-        ~/Library/Application Support/k8s-tray-forwarder/config.yaml
-    # Only push the cask on real tag releases, not snapshots/prereleases.
-    skip_upload: auto
+# The "K8s Port Forwards.app" zip and the Homebrew cask are produced after this
+# run by the release workflow (packaging/make-app.sh + packaging/publish-cask.sh)
+# — see the header comment for why the cask can't be generated here.
