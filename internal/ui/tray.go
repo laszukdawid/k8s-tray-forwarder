@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 
 	"fyne.io/fyne/v2"
 
@@ -34,9 +35,6 @@ func (a *App) rebuildTray() {
 		fyne.NewMenuItem("Add Forward…", func() { a.showAddWindow(nil) }),
 		fyne.NewMenuItem("Manage Forwards…", func() { a.showManageWindow() }),
 		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("Reload Config", a.reloadConfig),
-		fyne.NewMenuItem("Open Config File…", a.openConfigInEditor),
-		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Quit", a.quit),
 	)
 
@@ -57,7 +55,7 @@ func (a *App) forwardMenuItem(f config.Forward) *fyne.MenuItem {
 // aggregate status glyph and a running/total count.
 func (a *App) groupMenuItem(g config.ForwardGroup) *fyne.MenuItem {
 	forwards := g.Forwards
-	glyph, running, total := a.groupSummary(forwards)
+	glyph, _, running, total := a.groupSummary(forwards)
 
 	toggleText := "Start all"
 	if a.groupAllActive(forwards) {
@@ -76,27 +74,53 @@ func (a *App) groupMenuItem(g config.ForwardGroup) *fyne.MenuItem {
 	return parent
 }
 
-// menuLabel renders a status glyph + name + connection summary.
-func menuLabel(f config.Forward, st forward.Status) string {
-	glyph := "○"
-	switch st.State {
+// glyph is the monochrome status marker used in the (OS-drawn) tray menu, where
+// we can't use a coloured dot.
+func glyph(state forward.State) string {
+	switch state {
 	case forward.StateRunning:
-		glyph = "●"
+		return "●"
 	case forward.StateStarting, forward.StateReconnect:
-		glyph = "⟳"
+		return "⟳"
 	case forward.StateError:
-		glyph = "⚠"
+		return "⚠"
+	default:
+		return "○"
 	}
+}
+
+// statusColor maps a forward's state to the dot colour shown in the Manage
+// window: green running, amber starting/reconnecting, red error, grey stopped.
+func statusColor(state forward.State) color.Color {
+	switch state {
+	case forward.StateRunning:
+		return color.NRGBA{R: 0x22, G: 0xC5, B: 0x5E, A: 0xFF}
+	case forward.StateStarting, forward.StateReconnect:
+		return color.NRGBA{R: 0xF5, G: 0x9E, B: 0x0B, A: 0xFF}
+	case forward.StateError:
+		return color.NRGBA{R: 0xEF, G: 0x44, B: 0x44, A: 0xFF}
+	default:
+		return color.NRGBA{R: 0x9C, G: 0xA3, B: 0xAF, A: 0xFF}
+	}
+}
+
+// statusText is the name + connection summary shown after the status marker.
+func statusText(f config.Forward, st forward.Status) string {
 	switch st.State {
 	case forward.StateRunning:
-		return fmt.Sprintf("%s  %s  →  %s:%d", glyph, f.Name, f.BindAddress(), f.LocalPort)
+		return fmt.Sprintf("%s  →  %s:%d", f.Name, f.BindAddress(), f.LocalPort)
 	case forward.StateError:
-		return fmt.Sprintf("%s  %s  (retrying)", glyph, f.Name)
+		return f.Name + "  (retrying)"
 	case forward.StateStarting:
-		return fmt.Sprintf("%s  %s  (starting…)", glyph, f.Name)
+		return f.Name + "  (starting…)"
 	case forward.StateReconnect:
-		return fmt.Sprintf("%s  %s  (reconnecting…)", glyph, f.Name)
+		return f.Name + "  (reconnecting…)"
 	default:
-		return fmt.Sprintf("%s  %s", glyph, f.Name)
+		return f.Name
 	}
+}
+
+// menuLabel renders a status glyph + name + connection summary for the tray.
+func menuLabel(f config.Forward, st forward.Status) string {
+	return glyph(st.State) + "  " + statusText(f, st)
 }

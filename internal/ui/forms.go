@@ -331,36 +331,61 @@ func (a *App) showAddWindow(existing *config.Forward) {
 		return container.NewBorder(nil, nil, nil, btn, field)
 	}
 
-	form := widget.NewForm(
+	// Group related fields into titled cards so the form reads as a few distinct
+	// steps — what to call it, what in the cluster to reach, and how to expose it
+	// locally — rather than one long list of look-alike rows.
+	general := widget.NewForm(
 		widget.NewFormItem("Name", nameEntry),
 		widget.NewFormItem("Group", groupEntry),
+	)
+	target := widget.NewForm(
 		widget.NewFormItem("Context", withReload(contextSelect, loadContexts)),
 		widget.NewFormItem("Namespace", withReload(namespaceSelect, loadNamespaces)),
-		widget.NewFormItem("Target kind", kindSelect),
+		widget.NewFormItem("Kind", kindSelect),
 		widget.NewFormItem("Target", withReload(targetSelect, loadResources)),
+	)
+	ports := widget.NewForm(
 		widget.NewFormItem("Remote port", remoteEntry),
 		widget.NewFormItem("Local port", localEntry),
 		widget.NewFormItem("Bind address", addressEntry),
-		widget.NewFormItem("", autostartCheck),
 	)
 
+	sections := container.NewVBox(
+		a.formSection("General", theme.InfoIcon(), general),
+		a.formSection("Cluster target", theme.ComputerIcon(), target),
+		a.formSection("Local port-forward", theme.MailForwardIcon(), ports),
+	)
+
+	saveBtn := widget.NewButtonWithIcon("Save", theme.ConfirmIcon(), save)
+	saveBtn.Importance = widget.HighImportance
 	buttons := container.NewHBox(
 		widget.NewButton("Cancel", func() { win.Close() }),
-		widget.NewButton("Save", save),
+		saveBtn,
 	)
 
 	statusRow := container.NewBorder(nil, nil, nil, dismissBox, statusScroll)
+	// autostart is a per-forward behaviour toggle, not one of the connection
+	// fields, so it sits on its own just above the actions.
+	footer := container.NewVBox(autostartCheck, statusRow, buttons)
 
 	content := container.NewBorder(
-		widget.NewLabelWithStyle("Kubernetes port-forward", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		container.NewVBox(statusRow, buttons),
-		nil, nil,
-		container.NewVScroll(form),
+		nil, footer, nil, nil,
+		container.NewVScroll(sections),
 	)
 	win.SetContent(container.NewPadded(content))
-	win.Resize(fyne.NewSize(520, 600))
+	win.Resize(fyne.NewSize(540, 620))
 	win.Show()
 	win.RequestFocus()
+}
+
+// formSection frames a group of form rows in a titled card (icon + heading) so
+// the Add/Edit window reads as a few grouped steps rather than one flat list.
+func (a *App) formSection(title string, icon fyne.Resource, form *widget.Form) fyne.CanvasObject {
+	head := container.NewHBox(
+		widget.NewIcon(icon),
+		widget.NewLabelWithStyle(title, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+	)
+	return a.cardWrap(container.NewVBox(head, form), false)
 }
 
 // buildManageWindow creates the persistent (hidden) Manage window. It doubles
@@ -388,9 +413,12 @@ func (a *App) buildManageWindow() {
 	a.launchSyncing = true
 	a.launchCheck.SetChecked(a.cfg.LaunchAtLoginEnabled())
 	a.launchSyncing = false
+	addBtn := widget.NewButtonWithIcon("Add Forward…", theme.ContentAddIcon(), func() { a.showAddWindow(nil) })
+	addBtn.Importance = widget.HighImportance
 	header := container.NewHBox(
-		widget.NewButton("Add Forward…", func() { a.showAddWindow(nil) }),
+		addBtn,
 		widget.NewButton("Reload Config", func() { a.reloadConfig() }),
+		widget.NewButton("Open Config File…", func() { a.openConfigInEditor() }),
 		a.launchCheck,
 	)
 	logBox := container.NewBorder(
@@ -415,17 +443,20 @@ func (a *App) showManageWindow() {
 	a.keepAlive.RequestFocus()
 }
 
-// manageRows builds the Manage window body: one card per ungrouped forward and
-// a collapsible header (plus indented child cards when expanded) per group.
+// manageRows builds the Manage window body as a list of raised cards: one card
+// per ungrouped forward and a collapsible header card (plus indented child
+// cards when expanded) per group.
 func (a *App) manageRows() []fyne.CanvasObject {
 	groups := config.GroupForwards(a.cfg.List())
 	if len(groups) == 0 {
-		return []fyne.CanvasObject{widget.NewLabel("No forwards yet. Click “Add Forward…”.")}
+		empty := widget.NewLabelWithStyle("No forwards yet. Click “Add Forward…”.",
+			fyne.TextAlignCenter, fyne.TextStyle{Italic: true})
+		return []fyne.CanvasObject{empty}
 	}
 	var objs []fyne.CanvasObject
 	for _, g := range groups {
 		if g.Name == "" {
-			objs = append(objs, a.forwardCard(g.Forwards[0], false), widget.NewSeparator())
+			objs = append(objs, a.forwardCard(g.Forwards[0], false))
 			continue
 		}
 		objs = append(objs, a.groupRows(g)...)
@@ -433,12 +464,12 @@ func (a *App) manageRows() []fyne.CanvasObject {
 	return objs
 }
 
-// groupRows builds a group's single-line collapsible header followed by its
-// indented child cards when the group is expanded.
+// groupRows builds a group's collapsible header card followed by its indented
+// child cards when the group is expanded.
 func (a *App) groupRows(g config.ForwardGroup) []fyne.CanvasObject {
 	name := g.Name
 	expanded := a.expandedGroups[name]
-	glyph, running, total := a.groupSummary(g.Forwards)
+	_, col, running, total := a.groupSummary(g.Forwards)
 
 	expandIcon := theme.MenuExpandIcon()
 	if expanded {
@@ -453,38 +484,43 @@ func (a *App) groupRows(g config.ForwardGroup) []fyne.CanvasObject {
 	expandBtn.Importance = widget.LowImportance
 
 	title := widget.NewLabelWithStyle(
-		fmt.Sprintf("%s  %s   (%d/%d)", glyph, name, running, total),
+		fmt.Sprintf("%s   (%d/%d)", name, running, total),
 		fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	title.Truncation = fyne.TextTruncateEllipsis
 
-	toggleText := "Start all"
-	if a.groupAllActive(g.Forwards) {
-		toggleText = "Stop all"
-	}
 	forwards := g.Forwards
+	allActive := a.groupAllActive(forwards)
+	toggleText := "Start all"
 	toggleBtn := widget.NewButton(toggleText, func() { a.toggleGroup(forwards) })
-	toggleBtn.Importance = widget.LowImportance
+	if allActive {
+		toggleBtn.SetText("Stop all")
+	} else {
+		toggleBtn.Importance = widget.HighImportance // inviting accent when off
+	}
 
-	header := container.NewBorder(nil, nil, expandBtn, vCenter(toggleBtn), title)
-	objs := []fyne.CanvasObject{header}
+	left := container.NewHBox(expandBtn, statusDot(col))
+	header := container.NewBorder(nil, nil, left, vCenter(toggleBtn), title)
+
+	objs := []fyne.CanvasObject{a.cardWrap(header, true)}
 	if expanded {
 		for _, f := range g.Forwards {
 			objs = append(objs, a.forwardCard(f, true))
 		}
 	}
-	return append(objs, widget.NewSeparator())
+	return objs
 }
 
-// forwardCard builds a compact two-line row for a single forward: a bold status
-// line and a muted connection summary on the left, with small icon buttons
-// (Start/Stop, Edit, Delete) on the right. When indented is true the card is
-// offset so it reads as a child of its group header. Both text lines truncate
-// with an ellipsis rather than wrapping, so every row stays one fixed height.
+// forwardCard builds a compact two-line card for a single forward: a coloured
+// status dot, a bold title and a muted connection summary on the left, with
+// small icon buttons (Start/Stop, Edit, Delete) on the right. When indented is
+// true the card is offset so it reads as a child of its group header. Both text
+// lines truncate with an ellipsis rather than wrapping, so every row is one
+// fixed height.
 func (a *App) forwardCard(f config.Forward, indented bool) fyne.CanvasObject {
 	st := a.mgr.Status(f.ID)
 	active := a.mgr.Active(f.ID)
 
-	title := widget.NewLabelWithStyle(menuLabel(f, st), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	title := widget.NewLabelWithStyle(statusText(f, st), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	title.Truncation = fyne.TextTruncateEllipsis
 
 	detail := f.Context + " · " + f.Namespace + " · " + f.TargetKind + "/" + f.TargetName +
@@ -522,11 +558,46 @@ func (a *App) forwardCard(f config.Forward, indented bool) fyne.CanvasObject {
 
 	controls := vCenter(container.NewHBox(toggleBtn, editBtn, delBtn))
 	body := container.NewVBox(title, detailLabel)
-	card := container.NewBorder(nil, nil, nil, controls, body)
+	inner := container.NewBorder(nil, nil, statusDot(statusColor(st.State)), controls, body)
+	card := a.cardWrap(inner, false)
 	if indented {
 		return container.NewBorder(nil, nil, indentSpacer(), nil, card)
 	}
 	return card
+}
+
+// cardWrap frames content in a rounded, bordered, filled panel so each row reads
+// as a raised card on the tinted window background rather than a flat list item.
+// header cards get a subtle accent tint to set groups apart from their members.
+func (a *App) cardWrap(content fyne.CanvasObject, header bool) fyne.CanvasObject {
+	fill, stroke := a.cardColors(header)
+	bg := canvas.NewRectangle(fill)
+	bg.CornerRadius = 10
+	bg.StrokeColor = stroke
+	bg.StrokeWidth = 1
+	return container.NewStack(bg, container.NewPadded(content))
+}
+
+// cardColors picks a card's fill and border for the current light/dark variant.
+func (a *App) cardColors(header bool) (fill, stroke color.Color) {
+	dark := a.fyneApp.Settings().ThemeVariant() == theme.VariantDark
+	switch {
+	case header && dark:
+		return color.NRGBA{R: 0x2F, G: 0x31, B: 0x45, A: 0xFF}, color.NRGBA{R: 0x46, G: 0x4A, B: 0x6B, A: 0xFF}
+	case header:
+		return color.NRGBA{R: 0xE7, G: 0xEA, B: 0xFB, A: 0xFF}, color.NRGBA{R: 0xCD, G: 0xD3, B: 0xF4, A: 0xFF}
+	case dark:
+		return color.NRGBA{R: 0x2A, G: 0x2C, B: 0x36, A: 0xFF}, color.NRGBA{R: 0x3B, G: 0x3E, B: 0x4C, A: 0xFF}
+	default:
+		return color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}, color.NRGBA{R: 0xE1, G: 0xE4, B: 0xF0, A: 0xFF}
+	}
+}
+
+// statusDot is a small round coloured indicator, kept circular and vertically
+// centred regardless of the height of the row it sits in.
+func statusDot(c color.Color) fyne.CanvasObject {
+	dot := canvas.NewCircle(c)
+	return container.NewCenter(container.NewGridWrap(fyne.NewSize(11, 11), dot))
 }
 
 // vCenter keeps an object at its natural height, centered vertically, so it does
