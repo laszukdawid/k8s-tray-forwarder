@@ -23,6 +23,10 @@
 #   localPort   local port to bind (defaults to remotePort if omitted)
 #   address     local bind address (defaults to 127.0.0.1)
 #   autoStart   start this forward automatically when the app launches
+#   group       optional label that clusters related forwards together in the
+#               tray/Manage window; a whole group can be toggled at once or
+#               expanded to toggle its members individually. Forwards without a
+#               group are shown at the top level, alongside the groups.
 
 launchAtLogin: false
 
@@ -41,3 +45,17 @@ forwards:
     remotePort: 5432
     localPort: 5432
     autoStart: true
+    group: Datastores
+
+  # Sharing a group name clusters these together: toggle the whole "Datastores"
+  # group on/off at once, or expand it to flip Postgres and Redis individually.
+  - id: redis
+    name: Redis (project)
+    type: kubernetes
+    context: personal-k8s
+    namespace: project
+    targetKind: service
+    targetName: redis
+    remotePort: 6379
+    localPort: 6379
+    group: Datastores

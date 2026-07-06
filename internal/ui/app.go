@@ -38,19 +38,40 @@ type App struct {
 	launchCheck   *widget.Check // "Launch at login" toggle in the Manage window
 	launchSyncing bool          // reentrancy guard while reverting launchCheck
 
+	// expandedGroups records which groups are expanded in the Manage window,
+	// keyed by group name. Groups start collapsed (showing just the group-level
+	// toggle) and expand to reveal their individual forwards.
+	expandedGroups map[string]bool
+
 	logMu    sync.Mutex
 	logLines []string
 	logView  func() // refresh hook for the log pane, set when Manage is built
 }
 
+// compactTheme trims the default theme's padding so the Manage window (and the
+// forms) pack noticeably more into the same space without changing colours,
+// fonts or icons.
+type compactTheme struct{ fyne.Theme }
+
+func (c compactTheme) Size(name fyne.ThemeSizeName) float32 {
+	switch name {
+	case theme.SizeNameInnerPadding:
+		return 4 // default 8 — the biggest contributor to label/row height
+	case theme.SizeNamePadding:
+		return 3 // default 4 — gap between stacked widgets
+	}
+	return c.Theme.Size(name)
+}
+
 // NewApp constructs the application around an already-loaded config.
 func NewApp(cfg *config.Config) (*App, error) {
 	fyneApp := app.NewWithID(appID)
+	fyneApp.Settings().SetTheme(compactTheme{theme.DefaultTheme()})
 	desk, ok := fyneApp.(desktop.App)
 	if !ok {
 		return nil, fmt.Errorf("system tray is not supported on this platform")
 	}
-	a := &App{fyneApp: fyneApp, desk: desk, cfg: cfg}
+	a := &App{fyneApp: fyneApp, desk: desk, cfg: cfg, expandedGroups: map[string]bool{}}
 	a.mgr = forward.New(a.onForwardChange, a.logf)
 	return a, nil
 }
@@ -97,6 +118,63 @@ func (a *App) toggle(f config.Forward) {
 	if err := a.mgr.Start(f); err != nil {
 		a.logf("start %s failed: %v", f.Name, err)
 	}
+}
+
+// toggleGroup switches a whole group on or off. If every forward in the group
+// is already active it stops them all; otherwise it starts the ones that are
+// not yet running (already-active ones are left untouched).
+func (a *App) toggleGroup(forwards []config.Forward) {
+	stop := a.groupAllActive(forwards)
+	for _, f := range forwards {
+		switch {
+		case stop:
+			a.mgr.Stop(f.ID)
+		case !a.mgr.Active(f.ID):
+			if err := a.mgr.Start(f); err != nil {
+				a.logf("start %s failed: %v", f.Name, err)
+			}
+		}
+	}
+}
+
+// groupAllActive reports whether every forward in a non-empty group is active.
+func (a *App) groupAllActive(forwards []config.Forward) bool {
+	for _, f := range forwards {
+		if !a.mgr.Active(f.ID) {
+			return false
+		}
+	}
+	return len(forwards) > 0
+}
+
+// groupSummary aggregates a group's live state into a single status glyph plus
+// the running/total counts shown next to the group name.
+func (a *App) groupSummary(forwards []config.Forward) (glyph string, running, total int) {
+	total = len(forwards)
+	var anyErr, anyPending bool
+	for _, f := range forwards {
+		switch a.mgr.Status(f.ID).State {
+		case forward.StateRunning:
+			running++
+		case forward.StateError:
+			anyErr = true
+		case forward.StateStarting, forward.StateReconnect:
+			anyPending = true
+		}
+	}
+	switch {
+	case anyErr:
+		glyph = "⚠"
+	case anyPending:
+		glyph = "⟳"
+	case total > 0 && running == total:
+		glyph = "●"
+	case running > 0:
+		glyph = "◐"
+	default:
+		glyph = "○"
+	}
+	return glyph, running, total
 }
 
 // reloadConfig re-reads the file from disk so hand-edits take effect, leaving

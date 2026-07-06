@@ -61,9 +61,9 @@ func TestRoundTrip(t *testing.T) {
 func TestNormalizeDedupesIDs(t *testing.T) {
 	c := &Config{Forwards: []Forward{
 		{ID: "a", Name: "one"},
-		{ID: "a", Name: "two"},   // duplicate -> must be reassigned
-		{ID: "", Name: "three"},  // missing -> must be assigned
-		{ID: "b", Name: "four"},  // unique -> preserved
+		{ID: "a", Name: "two"},  // duplicate -> must be reassigned
+		{ID: "", Name: "three"}, // missing -> must be assigned
+		{ID: "b", Name: "four"}, // unique -> preserved
 	}}
 	c.normalize()
 
@@ -82,6 +82,41 @@ func TestNormalizeDedupesIDs(t *testing.T) {
 	}
 	if c.Forwards[3].ID != "b" {
 		t.Errorf("unique ID b should be preserved, got %q", c.Forwards[3].ID)
+	}
+}
+
+func TestGroupForwards(t *testing.T) {
+	forwards := []Forward{
+		{ID: "a", Name: "a", Group: "db"},
+		{ID: "b", Name: "b"},                // ungrouped -> standalone
+		{ID: "c", Name: "c", Group: "db"},   // joins the earlier "db" group
+		{ID: "d", Name: "d", Group: " db "}, // trimmed -> same group
+		{ID: "e", Name: "e", Group: "web"},
+	}
+
+	groups := GroupForwards(forwards)
+	if len(groups) != 3 {
+		t.Fatalf("expected 3 display groups, got %d: %+v", len(groups), groups)
+	}
+
+	// Order follows first appearance: db, (ungrouped b), web.
+	if groups[0].Name != "db" || len(groups[0].Forwards) != 3 {
+		t.Fatalf("first group should be db with 3 forwards, got %q/%d", groups[0].Name, len(groups[0].Forwards))
+	}
+	if groups[1].Name != "" || len(groups[1].Forwards) != 1 || groups[1].Forwards[0].ID != "b" {
+		t.Fatalf("second entry should be ungrouped singleton b, got %+v", groups[1])
+	}
+	if groups[2].Name != "web" || len(groups[2].Forwards) != 1 {
+		t.Fatalf("third group should be web with 1 forward, got %q/%d", groups[2].Name, len(groups[2].Forwards))
+	}
+
+	// Membership within the db group preserves input order.
+	got := []string{groups[0].Forwards[0].ID, groups[0].Forwards[1].ID, groups[0].Forwards[2].ID}
+	want := []string{"a", "c", "d"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("db group order = %v, want %v", got, want)
+		}
 	}
 }
 

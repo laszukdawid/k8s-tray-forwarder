@@ -42,6 +42,10 @@ type Forward struct {
 	LocalPort  int    `yaml:"localPort"`
 	Address    string `yaml:"address,omitempty"`
 	AutoStart  bool   `yaml:"autoStart"`
+	// Group is an optional label that clusters related forwards together in the
+	// UI so they can be toggled as a unit. Forwards with no group are shown at
+	// the top level, alongside the groups.
+	Group string `yaml:"group,omitempty"`
 }
 
 // BindAddress returns the local interface kubectl should bind to.
@@ -164,6 +168,39 @@ func (c *Config) List() []Forward {
 	out := make([]Forward, len(c.Forwards))
 	copy(out, c.Forwards)
 	return out
+}
+
+// ForwardGroup is an ordered set of forwards that share a Group name. Forwards
+// with no group are returned as singleton groups with an empty Name, so callers
+// can render grouped and ungrouped entries in one uniform pass while keeping
+// the ungrouped ones at the same level as the groups.
+type ForwardGroup struct {
+	Name     string
+	Forwards []Forward
+}
+
+// GroupForwards arranges forwards into display groups, preserving the order in
+// which each group (or ungrouped forward) first appears. All forwards sharing a
+// (trimmed, non-empty) Group name are collected into a single ForwardGroup at
+// the position of the first such forward; every ungrouped forward becomes its
+// own singleton group with an empty Name.
+func GroupForwards(forwards []Forward) []ForwardGroup {
+	var groups []ForwardGroup
+	index := make(map[string]int, len(forwards)) // group name -> position in groups
+	for _, f := range forwards {
+		name := strings.TrimSpace(f.Group)
+		if name == "" {
+			groups = append(groups, ForwardGroup{Forwards: []Forward{f}})
+			continue
+		}
+		if i, ok := index[name]; ok {
+			groups[i].Forwards = append(groups[i].Forwards, f)
+			continue
+		}
+		index[name] = len(groups)
+		groups = append(groups, ForwardGroup{Name: name, Forwards: []Forward{f}})
+	}
+	return groups
 }
 
 // Get returns the forward with the given ID.

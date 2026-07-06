@@ -3,10 +3,13 @@ package ui
 import (
 	"context"
 	"fmt"
+	"image/color"
+	"sort"
 	"strconv"
 	"strings"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
@@ -40,6 +43,9 @@ func (a *App) showAddWindow(existing *config.Forward) {
 	// --- widgets ------------------------------------------------------------
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder("e.g. Postgres")
+
+	groupEntry := widget.NewSelectEntry(a.existingGroups())
+	groupEntry.SetPlaceHolder("Optional — cluster with related forwards")
 
 	contextSelect := widget.NewSelect(nil, nil)
 	contextSelect.PlaceHolder = "Select context…"
@@ -81,12 +87,6 @@ func (a *App) showAddWindow(existing *config.Forward) {
 
 	// resources holds the most recently fetched targets so we can prefill ports.
 	var resources []kube.Resource
-	// want* carry edit values to be re-applied as each async load completes,
-	// re-using the normal OnChanged cascade instead of duplicating it.
-	var wantNamespace, wantTarget string
-	// restoring is true while the edit-prefill cascade runs; it stops a
-	// user-initiated change from wiping the want* slots before they are applied.
-	restoring := existing != nil
 	// Monotonic request counters: each loader bumps its counter and captures the
 	// value; a late async result whose counter no longer matches is discarded, so
 	// a slow response for a stale selection can't clobber a newer one. All reads
@@ -113,37 +113,25 @@ func (a *App) showAddWindow(existing *config.Forward) {
 	dismissBtn.OnTapped = func() { setStatus("") }
 
 	// --- async loaders ------------------------------------------------------
-	loadResources := func() {
-		ctxName, ns, kind := contextSelect.Selected, namespaceSelect.Selected, kindSelect.Selected
-		if ctxName == "" || ns == "" || kind == "" {
-			return
-		}
-		resReq++
-		req := resReq
-		setStatus(fmt.Sprintf("loading %ss in %s…", kind, ns))
+	// Discovery shells out to kubectl — Namespaces and Resources hit the cluster
+	// (and its auth), so it runs only on demand: the per-field ↻ buttons, or the
+	// cascade below when the user changes an upstream selection. Editing an
+	// existing forward pre-fills every field from the saved values and triggers
+	// none of these, so opening Edit is instant and needs no cluster access.
+	// Each loader preserves the current selection (via ensureOption) so a refresh
+	// widens the choices without discarding what is already picked.
+	loadContexts := func() {
+		setStatus("loading contexts…")
 		go func() {
-			res, err := kube.Resources(context.Background(), ctxName, ns, kind)
+			ctxs, err := kube.Contexts(context.Background())
 			fyne.Do(func() {
-				if req != resReq {
-					return // superseded by a newer request
-				}
-				restoring = false // edit cascade has reached its final stage
 				if err != nil {
 					setError(err)
 					return
 				}
-				resources = res
-				names := make([]string, len(res))
-				for i, r := range res {
-					names[i] = r.Name
-				}
-				targetSelect.SetOptions(names)
-				setStatus(fmt.Sprintf("%d %s(s) found", len(res), kind))
-				if wantTarget != "" {
-					t := wantTarget
-					wantTarget = ""
-					targetSelect.SetText(t)
-				}
+				contextSelect.Options = ensureOption(ctxs, contextSelect.Selected)
+				contextSelect.Refresh()
+				setStatus(fmt.Sprintf("%d context(s)", len(ctxs)))
 			})
 		}()
 	}
@@ -151,6 +139,7 @@ func (a *App) showAddWindow(existing *config.Forward) {
 	loadNamespaces := func() {
 		ctxName := contextSelect.Selected
 		if ctxName == "" {
+			setStatus("pick a context first")
 			return
 		}
 		nsReq++
@@ -166,27 +155,50 @@ func (a *App) showAddWindow(existing *config.Forward) {
 					setError(err)
 					return
 				}
-				if wantNamespace != "" {
-					nss = ensureOption(nss, wantNamespace)
-				}
-				namespaceSelect.Options = nss
+				namespaceSelect.Options = ensureOption(nss, namespaceSelect.Selected)
 				namespaceSelect.Refresh()
-				setStatus("")
-				if wantNamespace != "" {
-					ns := wantNamespace
-					wantNamespace = ""
-					namespaceSelect.SetSelected(ns)
+				setStatus(fmt.Sprintf("%d namespace(s)", len(nss)))
+			})
+		}()
+	}
+
+	loadResources := func() {
+		ctxName, ns, kind := contextSelect.Selected, namespaceSelect.Selected, kindSelect.Selected
+		if ctxName == "" || ns == "" || kind == "" {
+			setStatus("pick a context, namespace and kind first")
+			return
+		}
+		resReq++
+		req := resReq
+		setStatus(fmt.Sprintf("loading %ss in %s…", kind, ns))
+		go func() {
+			res, err := kube.Resources(context.Background(), ctxName, ns, kind)
+			fyne.Do(func() {
+				if req != resReq {
+					return // superseded by a newer request
 				}
+				if err != nil {
+					setError(err)
+					return
+				}
+				resources = res
+				names := make([]string, len(res))
+				for i, r := range res {
+					names[i] = r.Name
+				}
+				targetSelect.SetOptions(ensureOption(names, targetSelect.Text))
+				setStatus(fmt.Sprintf("%d %s(s) found", len(res), kind))
 			})
 		}()
 	}
 
 	// --- wire cascade -------------------------------------------------------
+	// These fire only on a user-initiated change (seeding the selects for an edit
+	// sets their .Selected field directly, which does not invoke OnChanged).
+	// Picking a different context or namespace is deliberate, so re-querying the
+	// cluster for the now-stale downstream choices is expected there.
 	contextSelect.OnChanged = func(string) {
 		resReq++ // invalidate any in-flight resource load tied to the old context
-		if !restoring {
-			wantNamespace, wantTarget = "", ""
-		}
 		namespaceSelect.ClearSelected()
 		namespaceSelect.Options = nil
 		namespaceSelect.Refresh()
@@ -196,16 +208,10 @@ func (a *App) showAddWindow(existing *config.Forward) {
 		loadNamespaces()
 	}
 	namespaceSelect.OnChanged = func(string) {
-		if !restoring {
-			wantTarget = ""
-		}
 		targetSelect.SetText("")
 		loadResources()
 	}
 	kindSelect.OnChanged = func(string) {
-		if !restoring {
-			wantTarget = ""
-		}
 		targetSelect.SetText("")
 		loadResources()
 	}
@@ -223,10 +229,16 @@ func (a *App) showAddWindow(existing *config.Forward) {
 		}
 	}
 
-	// --- prefill when editing ----------------------------------------------
+	// --- initial population -------------------------------------------------
 	if existing != nil {
+		// Edit: every field is already known, so fill it straight from the saved
+		// forward and touch the cluster for nothing. The selects' values are set
+		// directly (not via SetSelected) so seeding them doesn't fire OnChanged
+		// and kick off the discovery cascade. Each select is seeded with just its
+		// current value as the sole option; the ↻ buttons load the live choices
+		// only when the user actually wants to change one.
 		nameEntry.SetText(existing.Name)
-		kindSelect.SetSelected(orDefault(existing.TargetKind, config.KindDeployment))
+		groupEntry.SetText(existing.Group)
 		if existing.RemotePort > 0 {
 			remoteEntry.SetText(strconv.Itoa(existing.RemotePort))
 		}
@@ -237,30 +249,22 @@ func (a *App) showAddWindow(existing *config.Forward) {
 			addressEntry.SetText(existing.Address)
 		}
 		autostartCheck.SetChecked(existing.AutoStart)
-		wantNamespace = existing.Namespace
-		wantTarget = existing.TargetName
-	}
 
-	// --- load contexts (kicks off the cascade for edits) --------------------
-	setStatus("loading contexts…")
-	go func() {
-		ctxs, err := kube.Contexts(context.Background())
-		fyne.Do(func() {
-			if err != nil {
-				setError(err)
-				return
-			}
-			if existing != nil {
-				ctxs = ensureOption(ctxs, existing.Context)
-			}
-			contextSelect.Options = ctxs
-			contextSelect.Refresh()
-			setStatus("")
-			if existing != nil && existing.Context != "" {
-				contextSelect.SetSelected(existing.Context)
-			}
-		})
-	}()
+		contextSelect.Options = []string{existing.Context}
+		contextSelect.Selected = existing.Context
+		contextSelect.Refresh()
+		namespaceSelect.Options = []string{existing.Namespace}
+		namespaceSelect.Selected = existing.Namespace
+		namespaceSelect.Refresh()
+		kindSelect.Selected = orDefault(existing.TargetKind, config.KindDeployment)
+		kindSelect.Refresh()
+		targetSelect.SetOptions([]string{existing.TargetName})
+		targetSelect.SetText(existing.TargetName)
+	} else {
+		// Add: nothing is known yet, so load the (local, cheap) context list to
+		// start the pick-context → namespace → target cascade.
+		loadContexts()
+	}
 
 	// --- save ---------------------------------------------------------------
 	save := func() {
@@ -279,6 +283,7 @@ func (a *App) showAddWindow(existing *config.Forward) {
 		fwd := config.Forward{
 			Type:       config.TypeKubernetes,
 			Name:       strings.TrimSpace(nameEntry.Text),
+			Group:      strings.TrimSpace(groupEntry.Text),
 			Context:    contextSelect.Selected,
 			Namespace:  namespaceSelect.Selected,
 			TargetKind: kindSelect.Selected,
@@ -305,17 +310,34 @@ func (a *App) showAddWindow(existing *config.Forward) {
 			a.mgr.Stop(saved.ID)
 			_ = a.mgr.Start(saved)
 		}
+		// Reveal the group the forward now belongs to, so a freshly created or
+		// re-assigned forward is visible instead of hidden inside a collapsed
+		// group. Only when the group is new/changed, so editing an unrelated
+		// field doesn't force a group the user deliberately collapsed back open.
+		if saved.Group != "" && (existing == nil || existing.Group != saved.Group) {
+			a.expandedGroups[saved.Group] = true
+		}
 		a.logf("saved forward %q", saved.Name)
 		a.onForwardChange()
 		win.Close()
 	}
 
+	// withReload pairs a cluster-backed select with a ↻ button that fetches its
+	// live choices on demand, so editing an existing forward never has to reload
+	// the field just to display the value it already holds.
+	withReload := func(field fyne.CanvasObject, reload func()) fyne.CanvasObject {
+		btn := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), reload)
+		btn.Importance = widget.LowImportance
+		return container.NewBorder(nil, nil, nil, btn, field)
+	}
+
 	form := widget.NewForm(
 		widget.NewFormItem("Name", nameEntry),
-		widget.NewFormItem("Context", contextSelect),
-		widget.NewFormItem("Namespace", namespaceSelect),
+		widget.NewFormItem("Group", groupEntry),
+		widget.NewFormItem("Context", withReload(contextSelect, loadContexts)),
+		widget.NewFormItem("Namespace", withReload(namespaceSelect, loadNamespaces)),
 		widget.NewFormItem("Target kind", kindSelect),
-		widget.NewFormItem("Target", targetSelect),
+		widget.NewFormItem("Target", withReload(targetSelect, loadResources)),
 		widget.NewFormItem("Remote port", remoteEntry),
 		widget.NewFormItem("Local port", localEntry),
 		widget.NewFormItem("Bind address", addressEntry),
@@ -393,54 +415,145 @@ func (a *App) showManageWindow() {
 	a.keepAlive.RequestFocus()
 }
 
-// manageRows builds one row widget per configured forward.
+// manageRows builds the Manage window body: one card per ungrouped forward and
+// a collapsible header (plus indented child cards when expanded) per group.
 func (a *App) manageRows() []fyne.CanvasObject {
-	forwards := a.cfg.List()
-	if len(forwards) == 0 {
+	groups := config.GroupForwards(a.cfg.List())
+	if len(groups) == 0 {
 		return []fyne.CanvasObject{widget.NewLabel("No forwards yet. Click “Add Forward…”.")}
 	}
-	objs := make([]fyne.CanvasObject, 0, len(forwards))
-	for _, f := range forwards {
-		f := f
-		st := a.mgr.Status(f.ID)
-		active := a.mgr.Active(f.ID)
-
-		title := widget.NewLabelWithStyle(menuLabel(f, st), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-		sub := f.Context + "  ·  " + f.Namespace + "  ·  " + f.TargetKind + "/" + f.TargetName +
-			fmt.Sprintf("  ·  %d→%d", f.LocalPort, f.RemotePort)
-		if st.State == forward.StateError && st.LastErr != "" {
-			sub += "\n⚠ " + st.LastErr
+	var objs []fyne.CanvasObject
+	for _, g := range groups {
+		if g.Name == "" {
+			objs = append(objs, a.forwardCard(g.Forwards[0], false), widget.NewSeparator())
+			continue
 		}
-		subLabel := widget.NewLabel(sub)
-		subLabel.Wrapping = fyne.TextWrapWord
-
-		toggleText := "Start"
-		if active {
-			toggleText = "Stop"
-		}
-		toggleBtn := widget.NewButton(toggleText, func() { a.toggle(f) })
-		editBtn := widget.NewButton("Edit", func() {
-			cur, _ := a.cfg.Get(f.ID)
-			a.showAddWindow(&cur)
-		})
-		delBtn := widget.NewButton("Delete", func() {
-			dialog.ShowConfirm("Delete forward", "Delete \""+f.Name+"\"?", func(ok bool) {
-				if !ok {
-					return
-				}
-				a.mgr.Stop(f.ID)
-				if err := a.cfg.Delete(f.ID); err != nil {
-					a.logf("delete failed: %v", err)
-				}
-				a.onForwardChange()
-			}, a.keepAlive)
-		})
-
-		controls := container.NewHBox(toggleBtn, editBtn, delBtn)
-		card := container.NewBorder(nil, nil, nil, controls, container.NewVBox(title, subLabel))
-		objs = append(objs, card, widget.NewSeparator())
+		objs = append(objs, a.groupRows(g)...)
 	}
 	return objs
+}
+
+// groupRows builds a group's single-line collapsible header followed by its
+// indented child cards when the group is expanded.
+func (a *App) groupRows(g config.ForwardGroup) []fyne.CanvasObject {
+	name := g.Name
+	expanded := a.expandedGroups[name]
+	glyph, running, total := a.groupSummary(g.Forwards)
+
+	expandIcon := theme.MenuExpandIcon()
+	if expanded {
+		expandIcon = theme.MenuDropDownIcon()
+	}
+	expandBtn := widget.NewButtonWithIcon("", expandIcon, func() {
+		a.expandedGroups[name] = !a.expandedGroups[name]
+		if a.logView != nil {
+			a.logView()
+		}
+	})
+	expandBtn.Importance = widget.LowImportance
+
+	title := widget.NewLabelWithStyle(
+		fmt.Sprintf("%s  %s   (%d/%d)", glyph, name, running, total),
+		fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	title.Truncation = fyne.TextTruncateEllipsis
+
+	toggleText := "Start all"
+	if a.groupAllActive(g.Forwards) {
+		toggleText = "Stop all"
+	}
+	forwards := g.Forwards
+	toggleBtn := widget.NewButton(toggleText, func() { a.toggleGroup(forwards) })
+	toggleBtn.Importance = widget.LowImportance
+
+	header := container.NewBorder(nil, nil, expandBtn, vCenter(toggleBtn), title)
+	objs := []fyne.CanvasObject{header}
+	if expanded {
+		for _, f := range g.Forwards {
+			objs = append(objs, a.forwardCard(f, true))
+		}
+	}
+	return append(objs, widget.NewSeparator())
+}
+
+// forwardCard builds a compact two-line row for a single forward: a bold status
+// line and a muted connection summary on the left, with small icon buttons
+// (Start/Stop, Edit, Delete) on the right. When indented is true the card is
+// offset so it reads as a child of its group header. Both text lines truncate
+// with an ellipsis rather than wrapping, so every row stays one fixed height.
+func (a *App) forwardCard(f config.Forward, indented bool) fyne.CanvasObject {
+	st := a.mgr.Status(f.ID)
+	active := a.mgr.Active(f.ID)
+
+	title := widget.NewLabelWithStyle(menuLabel(f, st), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	title.Truncation = fyne.TextTruncateEllipsis
+
+	detail := f.Context + " · " + f.Namespace + " · " + f.TargetKind + "/" + f.TargetName +
+		fmt.Sprintf(" · %d→%d", f.LocalPort, f.RemotePort)
+	if st.State == forward.StateError && st.LastErr != "" {
+		detail += "   ⚠ " + st.LastErr
+	}
+	detailLabel := widget.NewLabel(detail)
+	detailLabel.Truncation = fyne.TextTruncateEllipsis
+
+	toggleIcon := theme.MediaPlayIcon()
+	if active {
+		toggleIcon = theme.MediaStopIcon()
+	}
+	toggleBtn := widget.NewButtonWithIcon("", toggleIcon, func() { a.toggle(f) })
+	toggleBtn.Importance = widget.LowImportance
+	editBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), func() {
+		cur, _ := a.cfg.Get(f.ID)
+		a.showAddWindow(&cur)
+	})
+	editBtn.Importance = widget.LowImportance
+	delBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
+		dialog.ShowConfirm("Delete forward", "Delete \""+f.Name+"\"?", func(ok bool) {
+			if !ok {
+				return
+			}
+			a.mgr.Stop(f.ID)
+			if err := a.cfg.Delete(f.ID); err != nil {
+				a.logf("delete failed: %v", err)
+			}
+			a.onForwardChange()
+		}, a.keepAlive)
+	})
+	delBtn.Importance = widget.LowImportance
+
+	controls := vCenter(container.NewHBox(toggleBtn, editBtn, delBtn))
+	body := container.NewVBox(title, detailLabel)
+	card := container.NewBorder(nil, nil, nil, controls, body)
+	if indented {
+		return container.NewBorder(nil, nil, indentSpacer(), nil, card)
+	}
+	return card
+}
+
+// vCenter keeps an object at its natural height, centered vertically, so it does
+// not stretch to fill the taller cell beside it in a Border layout.
+func vCenter(o fyne.CanvasObject) fyne.CanvasObject { return container.NewCenter(o) }
+
+// indentSpacer is a fixed-width, zero-height transparent gap used to offset a
+// group's child rows without inflating their height (as a padded label would).
+func indentSpacer() fyne.CanvasObject {
+	r := canvas.NewRectangle(color.Transparent)
+	r.SetMinSize(fyne.NewSize(22, 0))
+	return r
+}
+
+// existingGroups returns the distinct group names already in use, sorted, to
+// offer as suggestions when adding or editing a forward.
+func (a *App) existingGroups() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range a.cfg.List() {
+		if g := strings.TrimSpace(f.Group); g != "" && !seen[g] {
+			seen[g] = true
+			out = append(out, g)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func ensureOption(opts []string, v string) []string {
