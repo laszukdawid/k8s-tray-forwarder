@@ -44,9 +44,26 @@ type App struct {
 	// toggle) and expand to reveal their individual forwards.
 	expandedGroups map[string]bool
 
+	// Drag-and-drop state for reassigning a forward to a group by dragging its
+	// row handle onto a group header. groupZones records each group header's
+	// hit-box (rebuilt on every manageRows pass); dragOverGroup is the header the
+	// pointer is currently over; the badge floats a hint next to the cursor.
+	groupZones     []groupZone
+	dragOverGroup  string
+	dragLayer      *fyne.Container
+	dragBadge      *fyne.Container
+	dragBadgeLabel *widget.Label
+
 	logMu    sync.Mutex
 	logLines []string
 	logView  func() // refresh hook for the log pane, set when Manage is built
+}
+
+// groupZone is a group header's drop target: its name and the on-screen object
+// whose bounds we hit-test the drag pointer against.
+type groupZone struct {
+	name string
+	obj  fyne.CanvasObject
 }
 
 // accent is the app's primary/brand colour (a modern indigo). Used for

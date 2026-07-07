@@ -429,7 +429,10 @@ func (a *App) buildManageWindow() {
 	split := container.NewVSplit(container.NewVScroll(rows), logBox)
 	split.Offset = 0.6
 
-	win.SetContent(container.NewBorder(header, nil, nil, nil, split))
+	// Stack the drag-hint overlay above the content so the floating "→ group"
+	// badge can be positioned anywhere over the window while dragging a row.
+	mainContent := container.NewBorder(header, nil, nil, nil, split)
+	win.SetContent(container.NewStack(mainContent, a.buildDragLayer()))
 	win.Resize(fyne.NewSize(660, 600))
 	refresh()
 }
@@ -447,6 +450,7 @@ func (a *App) showManageWindow() {
 // per ungrouped forward and a collapsible header card (plus indented child
 // cards when expanded) per group.
 func (a *App) manageRows() []fyne.CanvasObject {
+	a.groupZones = nil // rebuilt below; group headers register themselves as drop targets
 	groups := config.GroupForwards(a.cfg.List())
 	if len(groups) == 0 {
 		empty := widget.NewLabelWithStyle("No forwards yet. Click “Add Forward…”.",
@@ -501,7 +505,12 @@ func (a *App) groupRows(g config.ForwardGroup) []fyne.CanvasObject {
 	left := container.NewHBox(expandBtn, statusDot(col))
 	header := container.NewBorder(nil, nil, left, vCenter(toggleBtn), title)
 
-	objs := []fyne.CanvasObject{a.cardWrap(header, true)}
+	// Register the header card as a drop target so a row dragged onto it joins
+	// this group.
+	headerCard := a.cardWrap(header, true)
+	a.groupZones = append(a.groupZones, groupZone{name: name, obj: headerCard})
+
+	objs := []fyne.CanvasObject{headerCard}
 	if expanded {
 		for _, f := range g.Forwards {
 			objs = append(objs, a.forwardCard(f, true))
@@ -558,7 +567,10 @@ func (a *App) forwardCard(f config.Forward, indented bool) fyne.CanvasObject {
 
 	controls := vCenter(container.NewHBox(toggleBtn, editBtn, delBtn))
 	body := container.NewVBox(title, detailLabel)
-	inner := container.NewBorder(nil, nil, statusDot(statusColor(st.State)), controls, body)
+	// A grip on the left lets the row be dragged onto a group header to (re)assign
+	// its group; statusDot sits between the grip and the text.
+	lead := container.NewHBox(vCenter(newDragHandle(a, f.ID)), statusDot(statusColor(st.State)))
+	inner := container.NewBorder(nil, nil, lead, controls, body)
 	card := a.cardWrap(inner, false)
 	if indented {
 		return container.NewBorder(nil, nil, indentSpacer(), nil, card)
