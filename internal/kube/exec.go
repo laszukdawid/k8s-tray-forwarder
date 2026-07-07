@@ -44,6 +44,14 @@ func resolveKubectl() string {
 // Binary returns the resolved kubectl executable path.
 func Binary() string { return kubectlPath }
 
+// SetBinaryForTest overrides the kubectl path (pointing it at a stub) and
+// returns a func that restores the previous value. Test-only.
+func SetBinaryForTest(path string) (restore func()) {
+	prev := kubectlPath
+	kubectlPath = path
+	return func() { kubectlPath = prev }
+}
+
 // Env returns the current environment with commonBinDirs ensured on PATH, so
 // kubectl and its exec-auth helpers are found regardless of how the app was
 // launched (Terminal, Finder, or login item).
