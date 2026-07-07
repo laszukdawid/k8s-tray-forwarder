@@ -53,6 +53,7 @@ type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	wg       sync.WaitGroup // tracks live supervisor goroutines for clean shutdown
+	stopped  bool           // set by StopAll; once true the manager is terminal
 	onChange func()
 	logf     func(format string, args ...any)
 }
@@ -100,6 +101,10 @@ func (m *Manager) Start(fwd config.Forward) error {
 		return err
 	}
 	m.mu.Lock()
+	if m.stopped {
+		m.mu.Unlock()
+		return nil // shutting down; refuse to spin up new forwards
+	}
 	if _, ok := m.sessions[fwd.ID]; ok {
 		m.mu.Unlock()
 		return nil
@@ -133,9 +138,13 @@ func (m *Manager) Stop(id string) {
 	}
 }
 
-// StopAll tears down every active forward (used on quit).
+// StopAll tears down every active forward (used on quit). It marks the manager
+// stopped so no new forward can start afterwards: this keeps every wg.Add (under
+// the same lock, gated on !stopped) strictly before StopAllAndWait's wg.Wait,
+// which is the WaitGroup usage rule. The manager is terminal after this.
 func (m *Manager) StopAll() {
 	m.mu.Lock()
+	m.stopped = true
 	sessions := make([]*session, 0, len(m.sessions))
 	for id, s := range m.sessions {
 		sessions = append(sessions, s)

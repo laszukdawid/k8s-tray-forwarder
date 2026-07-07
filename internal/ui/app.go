@@ -119,6 +119,15 @@ func NewApp(cfg *config.Config) (*App, error) {
 	}
 	a := &App{fyneApp: fyneApp, desk: desk, cfg: cfg, expandedGroups: map[string]bool{}}
 	a.mgr = forward.New(a.onForwardChange, a.logf)
+
+	// Tear down every forward on shutdown so we never orphan kubectl processes
+	// (which would keep holding their local ports). The tray "Quit" item does
+	// this explicitly via quit(), but ⌘Q and SIGINT/SIGTERM (which Fyne turns
+	// into a Quit) bypass it — this stopped-hook catches every quit path. Fyne
+	// runs it to completion before the process exits (App.Run waits for queued
+	// lifecycle events), and StopAllAndWait is idempotent, so the tray path
+	// invoking it twice is harmless.
+	fyneApp.Lifecycle().SetOnStopped(a.mgr.StopAllAndWait)
 	return a, nil
 }
 
