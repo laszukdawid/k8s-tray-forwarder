@@ -4,6 +4,7 @@ vars:
   APP_NAME: K8s Port Forwards
   BIN: k8s-tray-forwarder
   TAP: laszukdawid/tap
+  DOCS_PORT: '4321'
 
 tasks:
   default:
@@ -49,6 +50,14 @@ tasks:
     desc: 'Regenerate the placeholder app icon (packaging/icon.png)'
     cmds:
       - go run ./packaging/gen-icon -o packaging/icon.png
+
+  docs:
+    desc: 'Serve the docs/ site locally (as GitHub Pages would) and open it'
+    cmds:
+      - 'echo "Serving docs at http://localhost:{{.DOCS_PORT}}/  (Ctrl+C to stop)"'
+      # open the browser shortly after, once the server below is listening
+      - '(sleep 1 && open "http://localhost:{{.DOCS_PORT}}/") >/dev/null 2>&1 &'
+      - 'python3 -m http.server {{.DOCS_PORT}} --directory docs'
 
   cask:
     desc: 'Render the Homebrew cask locally (dry run) from the built app zip'

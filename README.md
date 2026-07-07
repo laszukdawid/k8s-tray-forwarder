@@ -10,6 +10,11 @@ Built with Go + [Fyne](https://fyne.io). Port-forwards and resource discovery
 go through your local `kubectl`, so whatever auth already works on the command
 line (e.g. EKS `aws eks get-token`) works here too — no separate credentials.
 
+📖 **New here? Start with the [User Guide](docs/README.md)** — a walkthrough of
+the Manage window, groups, and adding forwards, with screenshots. Run
+`task docs` to browse it locally as a rendered site. The rest of this README
+covers install, build, and release.
+
 ## Features
 
 - **Tray toggles** — one checkable item per forward (`●` running, `○` stopped,

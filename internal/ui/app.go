@@ -4,6 +4,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -38,19 +39,85 @@ type App struct {
 	launchCheck   *widget.Check // "Launch at login" toggle in the Manage window
 	launchSyncing bool          // reentrancy guard while reverting launchCheck
 
+	// expandedGroups records which groups are expanded in the Manage window,
+	// keyed by group name. Groups start collapsed (showing just the group-level
+	// toggle) and expand to reveal their individual forwards.
+	expandedGroups map[string]bool
+
+	// Drag-and-drop state for reassigning a forward to a group by dragging its
+	// row handle onto a group header. groupZones records each group header's
+	// hit-box (rebuilt on every manageRows pass); dragOverGroup is the header the
+	// pointer is currently over; the badge floats a hint next to the cursor.
+	groupZones     []groupZone
+	dragOverGroup  string
+	dragLayer      *fyne.Container
+	dragBadge      *fyne.Container
+	dragBadgeLabel *widget.Label
+
 	logMu    sync.Mutex
 	logLines []string
 	logView  func() // refresh hook for the log pane, set when Manage is built
 }
 
+// groupZone is a group header's drop target: its name and the on-screen object
+// whose bounds we hit-test the drag pointer against.
+type groupZone struct {
+	name string
+	obj  fyne.CanvasObject
+}
+
+// accent is the app's primary/brand colour (a modern indigo). Used for
+// high-importance buttons, focus rings and the group-header tint.
+var accent = color.NRGBA{R: 0x5B, G: 0x6E, B: 0xF5, A: 0xFF}
+
+// modernTheme layers a brand colour, a tinted window background and rounded
+// corners over the default theme, and keeps padding compact. The tint lets the
+// card rows (drawn in a lighter/darker panel colour) read as raised surfaces
+// rather than a flat list — see cardColors in forms.go.
+type modernTheme struct{ fyne.Theme }
+
+func (m modernTheme) Color(name fyne.ThemeColorName, v fyne.ThemeVariant) color.Color {
+	dark := v == theme.VariantDark
+	switch name {
+	case theme.ColorNamePrimary, theme.ColorNameHyperlink:
+		return accent
+	case theme.ColorNameFocus:
+		return color.NRGBA{R: 0x5B, G: 0x6E, B: 0xF5, A: 0x88}
+	case theme.ColorNameBackground:
+		if dark {
+			return color.NRGBA{R: 0x1B, G: 0x1C, B: 0x22, A: 0xFF}
+		}
+		return color.NRGBA{R: 0xEF, G: 0xF0, B: 0xF6, A: 0xFF} // cool light grey
+	case theme.ColorNameInputBackground:
+		if dark {
+			return color.NRGBA{R: 0x2A, G: 0x2C, B: 0x36, A: 0xFF}
+		}
+		return color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
+	}
+	return m.Theme.Color(name, v)
+}
+
+func (m modernTheme) Size(name fyne.ThemeSizeName) float32 {
+	switch name {
+	case theme.SizeNameInnerPadding:
+		return 5 // default 8
+	case theme.SizeNamePadding:
+		return 4
+	case theme.SizeNameInputRadius, theme.SizeNameSelectionRadius:
+		return 8 // rounded inputs/buttons
+	}
+	return m.Theme.Size(name)
+}
+
 // NewApp constructs the application around an already-loaded config.
 func NewApp(cfg *config.Config) (*App, error) {
 	fyneApp := app.NewWithID(appID)
+	fyneApp.Settings().SetTheme(modernTheme{theme.DefaultTheme()})
 	desk, ok := fyneApp.(desktop.App)
 	if !ok {
 		return nil, fmt.Errorf("system tray is not supported on this platform")
 	}
-	a := &App{fyneApp: fyneApp, desk: desk, cfg: cfg}
+	a := &App{fyneApp: fyneApp, desk: desk, cfg: cfg, expandedGroups: map[string]bool{}}
 	a.mgr = forward.New(a.onForwardChange, a.logf)
 	return a, nil
 }
@@ -97,6 +164,63 @@ func (a *App) toggle(f config.Forward) {
 	if err := a.mgr.Start(f); err != nil {
 		a.logf("start %s failed: %v", f.Name, err)
 	}
+}
+
+// toggleGroup switches a whole group on or off. If every forward in the group
+// is already active it stops them all; otherwise it starts the ones that are
+// not yet running (already-active ones are left untouched).
+func (a *App) toggleGroup(forwards []config.Forward) {
+	stop := a.groupAllActive(forwards)
+	for _, f := range forwards {
+		switch {
+		case stop:
+			a.mgr.Stop(f.ID)
+		case !a.mgr.Active(f.ID):
+			if err := a.mgr.Start(f); err != nil {
+				a.logf("start %s failed: %v", f.Name, err)
+			}
+		}
+	}
+}
+
+// groupAllActive reports whether every forward in a non-empty group is active.
+func (a *App) groupAllActive(forwards []config.Forward) bool {
+	for _, f := range forwards {
+		if !a.mgr.Active(f.ID) {
+			return false
+		}
+	}
+	return len(forwards) > 0
+}
+
+// groupSummary aggregates a group's live state into a status glyph, a matching
+// colour (for the Manage window's status dot) and the running/total counts.
+func (a *App) groupSummary(forwards []config.Forward) (glyph string, col color.Color, running, total int) {
+	total = len(forwards)
+	var anyErr, anyPending bool
+	for _, f := range forwards {
+		switch a.mgr.Status(f.ID).State {
+		case forward.StateRunning:
+			running++
+		case forward.StateError:
+			anyErr = true
+		case forward.StateStarting, forward.StateReconnect:
+			anyPending = true
+		}
+	}
+	switch {
+	case anyErr:
+		glyph, col = "⚠", statusColor(forward.StateError)
+	case anyPending:
+		glyph, col = "⟳", statusColor(forward.StateStarting)
+	case total > 0 && running == total:
+		glyph, col = "●", statusColor(forward.StateRunning)
+	case running > 0:
+		glyph, col = "◐", statusColor(forward.StateStarting) // partial → amber
+	default:
+		glyph, col = "○", statusColor(forward.StateStopped)
+	}
+	return glyph, col, running, total
 }
 
 // reloadConfig re-reads the file from disk so hand-edits take effect, leaving
